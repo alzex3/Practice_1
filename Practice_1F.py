@@ -5,6 +5,7 @@ from tqdm import tqdm
 from time import sleep
 from datetime import datetime
 from googleapiclient.discovery import build
+from oauth2client import file, client, tools
 from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaInMemoryUpload
 
@@ -13,20 +14,99 @@ def path():
     return f'Backup {datetime.now().strftime("%d.%m.%Y, %H.%M.%S")}'
 
 
+def get_source():
+    print("""\nВыберите источник фоторгафий:
+        vk - ВКонтакте 
+        ok - Одноклассники 
+        in - Instagram
+        exit - выход""")
+
+    while True:
+        source = input('\nВведите команду: ').lower()
+        if source == 'vk':
+            vk_token = input('Введите токен ВКонтакте:\n')
+            vk_user_id = input('Введите id пользователя, фотографии которого необходимо сохранить:\n')
+            mode = input('Выберите режим | "user" - сохранить фоторгафии профиля, "all" - все фотографии:\n')
+            vk_downloader = VKDownloader(vk_token, vk_user_id, mode)
+            return vk_downloader
+
+        elif source == 'ok':
+            ok_access_token = input('Введите токен Одноклассники:\n')
+            application_key = input('Введите "application key":\n')
+            secret_key = input('Введите токен "secret key":\n')
+            ok_user_id = input('Введите id пользователя, фотографии которого необходимо сохранить:\n')
+            mode = input('Выберите режим | "user" - сохранить фоторгафии профиля, "all" - все фотографии:\n')
+            ok_downloader = OKDownloader(application_key, ok_access_token, secret_key, ok_user_id, mode)
+            return ok_downloader
+
+        elif source == 'in':
+            inst_access_token = input('Введите токен Instagram:\n')
+            inst_downloader = INSTDownloader(inst_access_token)
+            return inst_downloader
+
+        elif source == 'exit':
+            print('Программа завершена!')
+            break
+
+        else:
+            print('Комманда введена неверно, повторите ввод!')
+
+
+def get_target():
+    print("""Выберите хранилище для сохранения:
+        gl - Google Drive
+        ya - Яндекс Диск
+        exit - выход""")
+
+    while True:
+        target = input('\nВведите команду: ').lower()
+        if target == 'ya':
+            ya_token = input('Введите токен Яндекс Диск:\n')
+            ya_uploader = YaUploader(ya_token)
+            return ya_uploader
+
+        elif target == 'gl':
+            credentials_file = input('При первом запуске будет открыт браузер для аутентификации.'
+                                     '\nВведите название файла .json с правами доступа Google Api (Credentials):\n')
+            gl_uploader = GglUploader(credentials_file)
+            return gl_uploader
+
+        elif target == 'exit':
+            print('Программа завершена!')
+            break
+
+        else:
+            print('Комманда введена неверно, повторите ввод!')
+
+
+def run():
+    print('Программа "Social Backup" запущена!\n')
+    try:
+        get_target().upload(get_source().download())
+    except AttributeError:
+        pass
+    except Exception:
+        print('\nДанные авторизации указаны неверно!')
+
+
 class VKDownloader:
-    def __init__(self, token):
+    def __init__(self, token, user_id, mode):
         self.token = token
+        self.user_id = user_id
+        self.mode = mode
 
-    def download(self, user_id, mode):
-        if mode == 'user':
+    def download(self):
+        if self.mode == 'user':
             method = 'photos.get'
-            params = {'user_id': f'{user_id}', 'album_id': 'profile', 'extended': '1',
+            params = {'user_id': f'{self.user_id}', 'album_id': 'profile', 'extended': '1',
                       'access_token': f'{self.token}', 'v': '5.52'}
 
-        elif mode == 'all':
+        elif self.mode == 'all':
             method = 'photos.getAll'
-            params = {'owner_id': f'{user_id}', 'count': '200', 'extended': '1',
+            params = {'owner_id': f'{self.user_id}', 'count': '200', 'extended': '1',
                       'access_token': f'{self.token}', 'v': '5.52'}
+        else:
+            print('Режим введён неверно!')
 
         url = f'https://api.vk.com/method/{method}'
         resp = requests.get(url, params).json()
@@ -55,11 +135,13 @@ class VKDownloader:
 
 
 class OKDownloader:
-    def __init__(self, app_key, token, sec_key):
+    def __init__(self, app_key, token, sec_key, user_id, mode):
         self.url = 'https://api.ok.ru/fb.do?'
         self.app_key = app_key
         self.token = token
         self.sec_key = sec_key
+        self.user_id = user_id
+        self.mode = mode
 
     def get_albums_ids(self, fid):
         hash_str = f'application_key={self.app_key}count=100fid={fid}method=photos.getAlbums{self.sec_key}'
@@ -96,7 +178,7 @@ class OKDownloader:
 
         return requests.get(request).json()
 
-    def download(self, user_id, mode):
+    def download(self):
 
         def user_pics():
             pics = {}
@@ -113,7 +195,7 @@ class OKDownloader:
 
         def all_pics():
             pics = user_pics()
-            for album in self.get_albums_ids(user_id):
+            for album in self.get_albums_ids(self.user_id):
                 for pic in self.get_album_pics(album)['photos']:
 
                     pic_likes = pic['like_count']
@@ -126,10 +208,12 @@ class OKDownloader:
 
             return pics
 
-        if mode == 'user':
+        if self.mode == 'user':
             return user_pics()
-        elif mode == 'all':
+        elif self.mode == 'all':
             return all_pics()
+        else:
+            print('Режим введён неверно!')
 
 
 class INSTDownloader:
@@ -185,10 +269,22 @@ class GglUploader:
     def __init__(self, cred_file):
         self.cred_file = cred_file
 
+    def get_token(self):
+        scopes = 'https://www.googleapis.com/auth/drive'
+        store = file.Storage('storage.json')
+        creds = store.get()
+        if not creds or creds.invalid:
+            try:
+                flow = client.flow_from_clientsecrets(self.cred_file, scopes)
+                tools.run_flow(flow, store)
+            except Exception:
+                print('Файл авторизации Google не найден!')
+
     def upload(self, items):
+        self.get_token()
         path_name = path()
         scopes = ['https://www.googleapis.com/auth/drive']
-        credentials = Credentials.from_authorized_user_file(self.cred_file, scopes)
+        credentials = Credentials.from_authorized_user_file('storage.json', scopes)
         service = build('drive', 'v3', credentials=credentials)
 
         folder_metadata = {
@@ -225,38 +321,4 @@ class GglUploader:
         print('Копирование завершено успешно!')
 
 
-# VK Data
-vk_token = ''
-vk_user_id = ''
-
-# OK Data
-application_key = ''
-ok_access_token = ''
-secret_key = ''
-ok_user_id = ''
-
-# INST Data
-inst_access_token = ''
-
-# Ya Data
-ya_token = ''
-
-# Gg Data
-credentials_file = ''
-
-
-vk_downloader = VKDownloader(vk_token)
-ok_downloader = OKDownloader(application_key, ok_access_token, secret_key)
-inst_downloader = INSTDownloader(inst_access_token)
-
-ya_uploader = YaUploader(ya_token)
-gl_uploader = GglUploader(credentials_file)
-
-
-gl_uploader.upload(vk_downloader.download(vk_user_id, 'user'))
-gl_uploader.upload(ok_downloader.download(ok_user_id, 'user'))
-gl_uploader.upload(inst_downloader.download())
-
-ya_uploader.upload(vk_downloader.download(vk_user_id, 'user'))
-ya_uploader.upload(ok_downloader.download(ok_user_id, 'user'))
-ya_uploader.upload(inst_downloader.download())
+run()
